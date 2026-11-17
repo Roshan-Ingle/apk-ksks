@@ -1,0 +1,77 @@
+name: Build APK
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Prepare Workspace and Extract Source
+        run: |
+          mkdir -p workspace/extracted
+          unzip -o source.zip -d workspace/extracted/
+
+      - name: Build APK
+        run: |
+          cd workspace
+          # Check if source contains native Android project
+          if [ -f "extracted/gradlew" ] || [ -f "extracted/build.gradle" ]; then
+            echo "Custom Gradle project detected."
+            cd extracted
+            chmod +x gradlew || true
+            ./gradlew assembleDebug || gradle assembleDebug
+            APK_PATH=$(find . -name "*.apk" | head -n 1)
+            cp "$APK_PATH" ../../app-debug.apk
+          else
+            echo "Web assets detected. Wrapping with Capacitor..."
+            mkdir -p web_app
+            INDEX_FILE=$(find extracted -type f -iname "index.html" | head -n 1)
+            if [ -n "$INDEX_FILE" ]; then
+              SRC_DIR=$(dirname "$INDEX_FILE")
+              cp -r "$SRC_DIR"/* web_app/
+            else
+              cp -r extracted/* web_app/
+              if [ ! -f "web_app/index.html" ]; then
+                echo '<!DOCTYPE html><html><body style="background:#000;color:#fff;">App Loaded</body></html>' > web_app/index.html
+              fi
+            fi
+
+            npm init -y
+            npm install @capacitor/core@latest @capacitor/cli@latest @capacitor/android@latest
+            npx cap init "App" "com.builder.app" --web-dir "web_app"
+            npx cap add android
+
+            cd android
+            chmod +x gradlew
+            ./gradlew assembleDebug --no-daemon
+            cp app/build/outputs/apk/debug/app-debug.apk ../../app-debug.apk
+          fi
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.run_id }}
+          name: APK Build ${{ github.run_number }}
+          files: app-debug.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
